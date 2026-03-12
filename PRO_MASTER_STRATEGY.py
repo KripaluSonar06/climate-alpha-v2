@@ -1,23 +1,15 @@
 """
-CLIMATE-ALPHA MASTER STRATEGY
-FINAL UPGRADED VERSION
-
-Features:
-- Parallel ML training
-- Feature selection
-- Walk-forward training
-- Regime-aware portfolio scaling
-- Robust data download
+CLIMATE-ALPHA v4 MASTER STRATEGY
+Institutional Quant Research Pipeline
 """
 
 import numpy as np
 import pandas as pd
-from typing import List
 import yfinance as yf
-import warnings
-warnings.filterwarnings("ignore")
 
+from typing import List
 from concurrent.futures import ThreadPoolExecutor
+
 from sklearn.feature_selection import SelectKBest, f_regression
 
 from PRO_feature_engineering import AdvancedFeatureEngineer
@@ -29,10 +21,7 @@ from PRO_backtest_engine import ProfessionalBacktestEngine, BacktestConfig
 
 class ClimateAlphaMasterStrategy:
 
-    def __init__(self,
-                 tickers: List[str],
-                 start_date="2019-01-01",
-                 end_date="2024-12-31"):
+    def __init__(self, tickers: List[str], start_date, end_date):
 
         self.tickers = tickers
         self.start_date = start_date
@@ -52,31 +41,26 @@ class ClimateAlphaMasterStrategy:
             )
         )
 
-        self.ml_models = {}
         self.data = {}
         self.features = {}
         self.predictions = {}
+        self.models = {}
 
-        self.regimes = None
         self.positions = None
-        self.backtest_results = None
+        self.regimes = None
+        self.results = None
 
-        print("="*80)
-        print("CLIMATE-ALPHA QUANT SYSTEM (FINAL VERSION)")
-        print("="*80)
+        print("\nCLIMATE ALPHA v4 INITIALIZED")
 
-    # --------------------------------------------------
+    # ------------------------------------------------
     # DATA COLLECTION
-    # --------------------------------------------------
+    # ------------------------------------------------
 
     def step1_collect_data(self):
 
-        print("\nSTEP 1: DATA COLLECTION")
-        print("-"*60)
+        print("\nSTEP 1: DATA DOWNLOAD")
 
         for ticker in self.tickers:
-
-            print(f"Downloading {ticker}...")
 
             df = yf.download(
                 ticker,
@@ -86,106 +70,97 @@ class ClimateAlphaMasterStrategy:
                 progress=False
             )
 
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
             df = df.dropna()
 
             self.data[ticker] = df
 
-            print(f"✓ {ticker} rows: {len(df)}")
+            print(f"{ticker}: {len(df)} rows")
 
-    # --------------------------------------------------
+    # ------------------------------------------------
     # FEATURE ENGINEERING
-    # --------------------------------------------------
+    # ------------------------------------------------
 
-    def step2_engineer_features(self):
+    def step2_features(self):
 
         print("\nSTEP 2: FEATURE ENGINEERING")
-        print("-"*60)
 
         for ticker in self.tickers:
 
-            data = self.data[ticker]
+            df = self.data[ticker]
 
-            volume = data["Volume"] if "Volume" in data.columns else None
+            feats = self.feature_engineer.create_all_features(
+                df,
+                df["Volume"] if "Volume" in df.columns else None
+            )
 
-            feats = self.feature_engineer.create_all_features(data, volume)
-
-            feats = self._select_top_features(feats, data["Close"])
+            feats = self._feature_selection(feats, df["Close"])
 
             self.features[ticker] = feats
 
-            print(f"✓ {ticker} features: {feats.shape[1]}")
+            print(f"{ticker}: {feats.shape[1]} features")
 
-    # --------------------------------------------------
+    # ------------------------------------------------
     # FEATURE SELECTION
-    # --------------------------------------------------
+    # ------------------------------------------------
 
-    def _select_top_features(self, features, price):
+    def _feature_selection(self, features, price):
 
-        returns = price.pct_change().shift(-5)
+        target = price.pct_change().shift(-5)
 
         df = features.copy()
-        df["target"] = returns
+        df["target"] = target
 
         df = df.dropna()
 
         X = df.drop("target", axis=1)
         y = df["target"]
 
-        selector = SelectKBest(score_func=f_regression, k=60)
+        selector = SelectKBest(f_regression, k=60)
         selector.fit(X, y)
 
         selected = X.columns[selector.get_support()]
 
         return features[selected]
 
-    # --------------------------------------------------
-    # PARALLEL ML TRAINING
-    # --------------------------------------------------
+    # ------------------------------------------------
+    # ML TRAINING
+    # ------------------------------------------------
 
-    def step3_train_ml_models(self):
+    def step3_ml_training(self):
 
-        print("\nSTEP 3: TRAINING ML MODELS (PARALLEL)")
-        print("-"*60)
+        print("\nSTEP 3: ML TRAINING")
 
         def train_asset(ticker):
 
-            features = self.features[ticker]
+            feats = self.features[ticker]
             prices = self.data[ticker]["Close"]
-
-            split = int(len(features) * 0.7)
-
-            train_X = features.iloc[:split]
-            train_y = prices.iloc[:split]
 
             model = EnsembleMLSystem(target_horizon=5)
 
-            model.train_ensemble(train_X, train_y)
+            model.train_ensemble(feats, prices)
 
-            preds = model.predict(features)
+            preds = model.predict(feats)
 
             return ticker, model, preds
 
         with ThreadPoolExecutor(max_workers=len(self.tickers)) as executor:
+
             results = executor.map(train_asset, self.tickers)
 
         for ticker, model, preds in results:
 
-            self.ml_models[ticker] = model
+            self.models[ticker] = model
             self.predictions[ticker] = preds
 
-            print(f"✓ {ticker} ML trained")
+            print(f"{ticker}: model trained")
 
-    # --------------------------------------------------
+    # ------------------------------------------------
     # REGIME DETECTION
-    # --------------------------------------------------
+    # ------------------------------------------------
 
-    def step4_detect_regimes(self):
+    def step4_regimes(self):
 
         print("\nSTEP 4: REGIME DETECTION")
-        print("-"*60)
 
         avg_price = pd.concat(
             [self.data[t]["Close"] for t in self.tickers],
@@ -194,122 +169,122 @@ class ClimateAlphaMasterStrategy:
 
         self.regimes = self.regime_detector.detect_regimes_comprehensive(avg_price)
 
-        print("✓ Market regimes detected")
+        print("Market regimes identified")
 
-    # --------------------------------------------------
-    # PORTFOLIO OPTIMIZATION
-    # --------------------------------------------------
+    # ------------------------------------------------
+    # PORTFOLIO CONSTRUCTION
+    # ------------------------------------------------
 
-    def step5_optimize_portfolio(self):
+    def step5_portfolio(self):
 
-        print("\nSTEP 5: PORTFOLIO OPTIMIZATION")
-        print("-"*60)
+        print("\nSTEP 5: PORTFOLIO CONSTRUCTION")
 
         returns = pd.DataFrame({
             t: self.data[t]["Close"].pct_change()
             for t in self.tickers
         })
 
-        pos = {}
+        positions = {}
 
         for ticker in self.tickers:
 
-            p = self.portfolio_optimizer.calculate_kelly_from_predictions(
+            pos = self.portfolio_optimizer.calculate_kelly_from_predictions(
                 self.predictions[ticker],
                 returns[ticker]
             )
 
-            pos[ticker] = p
+            positions[ticker] = pos
 
-        self.positions = pd.DataFrame(pos)
+        self.positions = pd.DataFrame(positions)
 
-        if self.regimes is not None:
+        self._apply_regime_scaling()
+        self._apply_volatility_target()
+        self._correlation_filter()
 
-            regime = self.regimes["regime_combined"]
+    # ------------------------------------------------
 
-            scale = {0:0.5, 1:1.0, 2:1.3}
+    def _apply_regime_scaling(self):
 
-            for r, m in scale.items():
+        if self.regimes is None:
+            return
 
-                mask = regime == r
+        regime = self.regimes["regime_combined"]
 
-                self.positions.loc[mask] *= m
+        multipliers = {0: 0.5, 1: 1.0, 2: 1.3}
 
-        print("✓ Portfolio positions ready")
+        for r, m in multipliers.items():
 
-    # --------------------------------------------------
+            mask = regime == r
+            self.positions.loc[mask] *= m
+
+    # ------------------------------------------------
+
+    def _apply_volatility_target(self):
+
+        returns = pd.DataFrame({
+            t: self.data[t]["Close"].pct_change()
+            for t in self.tickers
+        })
+
+        vol = returns.rolling(20).std()
+
+        target_vol = 0.15
+
+        scaler = target_vol / (vol + 1e-6)
+
+        scaler = scaler.clip(0.5, 2)
+
+        self.positions *= scaler
+
+    # ------------------------------------------------
+
+    def _correlation_filter(self):
+
+        returns = pd.DataFrame({
+            t: self.data[t]["Close"].pct_change()
+            for t in self.tickers
+        })
+
+        corr = returns.corr()
+
+        for i in range(len(corr)):
+            for j in range(i+1, len(corr)):
+
+                if abs(corr.iloc[i, j]) > 0.8:
+
+                    asset = corr.columns[j]
+
+                    self.positions[asset] *= 0.5
+
+    # ------------------------------------------------
     # BACKTEST
-    # --------------------------------------------------
+    # ------------------------------------------------
 
     def step6_backtest(self):
 
         print("\nSTEP 6: BACKTEST")
-        print("-"*60)
 
         prices = pd.DataFrame({
             t: self.data[t]["Close"]
             for t in self.tickers
         })
 
-        self.backtest_results = self.backtest_engine.run_backtest(
+        self.results = self.backtest_engine.run_backtest(
             self.positions,
             prices
         )
 
-    # --------------------------------------------------
-    # RESULTS
-    # --------------------------------------------------
+    # ------------------------------------------------
+    # PIPELINE
+    # ------------------------------------------------
 
-    def step7_analyze_results(self):
-
-        metrics = self.backtest_results["metrics"]
-
-        print("\nRESULTS SUMMARY")
-        print("-"*60)
-
-        print(f"Annual Return : {metrics['annualized_return']:.2%}")
-        print(f"Sharpe Ratio  : {metrics['sharpe_ratio']:.2f}")
-        print(f"Max Drawdown  : {metrics['max_drawdown']:.2%}")
-        print(f"Win Rate      : {metrics['win_rate']:.2%}")
-
-    # --------------------------------------------------
-    # --------------------------------------------------
-    # COMPLETE PIPELINE
-    # --------------------------------------------------
-
-    def run_complete_strategy(self, portfolio_method="kelly"):
-
-        print("\n" + "="*80)
-        print("EXECUTING COMPLETE CLIMATE-ALPHA STRATEGY")
-        print("="*80)
+    def run_complete_strategy(self):
 
         self.step1_collect_data()
-        self.step2_engineer_features()
-        self.step3_train_ml_models()
-        self.step4_detect_regimes()
-        self.step5_optimize_portfolio()
+        self.step2_features()
+        self.step3_ml_training()
+        self.step4_regimes()
+        self.step5_portfolio()
         self.step6_backtest()
-        self.step7_analyze_results()
 
-        print("\n" + "="*80)
-        print("✓ STRATEGY EXECUTION COMPLETE")
-        print("="*80)
-
-        return self.backtest_results
-
-
-# --------------------------------------------------
-# RUN SCRIPT
-# --------------------------------------------------
-
-if __name__ == "__main__":
-
-    TICKERS = ["ICLN","TAN","ENPH","FSLR"]
-
-    strategy = ClimateAlphaMasterStrategy(
-        tickers=TICKERS,
-        start_date="2019-01-01",
-        end_date="2024-12-31"
-    )
-
-    results = strategy.run_complete_strategy()
+        return self.results
