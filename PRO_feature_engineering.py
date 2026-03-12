@@ -1,6 +1,6 @@
 """
-PROFESSIONAL FEATURE ENGINEERING - 200+ FEATURES
-Improved version with stability fixes and data validation
+PROFESSIONAL FEATURE ENGINEERING
+Stable version (no scalar-index errors)
 """
 
 import numpy as np
@@ -17,26 +17,31 @@ class AdvancedFeatureEngineer:
         self.scaler = StandardScaler()
         self.feature_names = []
 
-    def create_all_features(self, prices_df: pd.DataFrame,
-                            volume_df=None) -> pd.DataFrame:
+    # ----------------------------------------------------
+    # MAIN FEATURE CREATOR
+    # ----------------------------------------------------
 
-        features = pd.DataFrame(index=prices_df.index)
+    def create_all_features(self, prices_df: pd.DataFrame, volume_df=None) -> pd.DataFrame:
 
-        # ----------------------------
-        # Extract OHLC
-        # ----------------------------
-        if "Close" in prices_df.columns:
-            close = prices_df["Close"]
-            high = prices_df.get("High", close)
-            low = prices_df.get("Low", close)
-            open_price = prices_df.get("Open", close)
-        else:
-            close = prices_df.iloc[:, 0]
-            high = low = open_price = close
+        # Ensure dataframe
+        prices_df = prices_df.copy()
 
-        # ----------------------------
-        # FIX 1: Robust volume handling
-        # ----------------------------
+        # Force numeric
+        prices_df = prices_df.apply(pd.to_numeric, errors="coerce")
+
+        # Extract OHLC safely
+        close = prices_df["Close"] if "Close" in prices_df.columns else prices_df.iloc[:, 0]
+        high = prices_df["High"] if "High" in prices_df.columns else close
+        low = prices_df["Low"] if "Low" in prices_df.columns else close
+        open_price = prices_df["Open"] if "Open" in prices_df.columns else close
+
+        # Force Series
+        close = pd.Series(close)
+        high = pd.Series(high)
+        low = pd.Series(low)
+        open_price = pd.Series(open_price)
+
+        # Volume handling
         if volume_df is None:
             volume = pd.Series(1.0, index=close.index)
 
@@ -46,62 +51,66 @@ class AdvancedFeatureEngineer:
         else:
             volume = volume_df
 
+        volume = pd.Series(volume, index=close.index)
+
         print("Creating features:")
 
-        features.update(self._price_features(close, high, low, open_price))
-        features.update(self._momentum_features(close))
-        features.update(self._volatility_features(close, high, low))
-        features.update(self._volume_features(close, volume))
-        features.update(self._mean_reversion_features(close))
-        features.update(self._statistical_features(close))
-        features.update(self._technical_indicators(close, high, low, volume))
+        features = pd.DataFrame(index=close.index)
 
-        # ----------------------------
-        # FIX 2: Clean NaN / Inf
-        # ----------------------------
+        features = pd.concat([
+            self._price_features(close, high, low, open_price),
+            self._momentum_features(close),
+            self._volatility_features(close, high, low),
+            self._volume_features(close, volume),
+            self._mean_reversion_features(close),
+            self._statistical_features(close),
+            self._technical_indicators(close, high, low, volume)
+        ], axis=1)
+
+        # Clean data
         features = features.replace([np.inf, -np.inf], np.nan)
         features = features.fillna(0)
 
         self.feature_names = list(features.columns)
 
-        print(f"\nTotal features created: {len(self.feature_names)}")
+        print(f"Total features created: {len(self.feature_names)}")
 
         return features
 
     # ----------------------------------------------------
     # PRICE FEATURES
     # ----------------------------------------------------
+
     def _price_features(self, close, high, low, open_price):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         for period in [1,2,3,5,10,20,40,60]:
 
-            features[f"return_{period}"] = close.pct_change(period)
-
-            features[f"log_return_{period}"] = np.log(close / close.shift(period))
+            df[f"return_{period}"] = close.pct_change(period)
+            df[f"log_return_{period}"] = np.log(close / close.shift(period))
 
         for window in [5,10,20,50,100,200]:
 
             ma = close.rolling(window).mean()
+            df[f"price_vs_ma_{window}"] = (close - ma) / ma
 
-            features[f"price_vs_ma_{window}"] = (close - ma) / ma
+        df["high_low_range"] = (high - low) / close
+        df["open_close_range"] = (close - open_price) / open_price
 
-        features["high_low_range"] = (high - low) / close
-        features["open_close_range"] = (close - open_price) / open_price
-
-        return pd.DataFrame(features)
+        return df
 
     # ----------------------------------------------------
     # MOMENTUM FEATURES
     # ----------------------------------------------------
+
     def _momentum_features(self, close):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         for period in [5,10,20,30,60,90]:
 
-            features[f"roc_{period}"] = (close - close.shift(period)) / close.shift(period)
+            df[f"roc_{period}"] = (close - close.shift(period)) / close.shift(period)
 
         # RSI
         for period in [7,14,21]:
@@ -109,166 +118,155 @@ class AdvancedFeatureEngineer:
             delta = close.diff()
 
             gain = delta.clip(lower=0).rolling(period).mean()
-
             loss = (-delta.clip(upper=0)).rolling(period).mean()
 
-            rs = gain / (loss.replace(0,np.nan))
+            rs = gain / (loss.replace(0, np.nan))
 
-            features[f"rsi_{period}"] = 100 - (100/(1+rs))
+            df[f"rsi_{period}"] = 100 - (100 / (1 + rs))
 
         # MACD
         for fast, slow in [(12,26),(5,15)]:
 
             ema_fast = close.ewm(span=fast).mean()
-
             ema_slow = close.ewm(span=slow).mean()
 
             macd = ema_fast - ema_slow
 
-            features[f"macd_{fast}_{slow}"] = macd
+            df[f"macd_{fast}_{slow}"] = macd
+            df[f"macd_signal_{fast}_{slow}"] = macd.ewm(span=9).mean()
 
-            features[f"macd_signal_{fast}_{slow}"] = macd.ewm(span=9).mean()
-
-        return pd.DataFrame(features)
+        return df
 
     # ----------------------------------------------------
     # VOLATILITY FEATURES
     # ----------------------------------------------------
+
     def _volatility_features(self, close, high, low):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         returns = close.pct_change()
 
         for window in [5,10,20,30,60]:
 
-            features[f"volatility_{window}"] = returns.rolling(window).std() * np.sqrt(252)
+            df[f"volatility_{window}"] = returns.rolling(window).std() * np.sqrt(252)
 
         # Parkinson volatility
         for window in [10,20]:
 
             hl = np.log(high / low)
 
-            features[f"parkinson_vol_{window}"] = np.sqrt((hl**2).rolling(window).mean()/(4*np.log(2)))
+            df[f"parkinson_vol_{window}"] = np.sqrt((hl**2).rolling(window).mean()/(4*np.log(2)))
 
         # ATR
-        tr1 = high-low
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
 
-        tr2 = abs(high-close.shift())
-
-        tr3 = abs(low-close.shift())
-
-        tr = pd.concat([tr1,tr2,tr3],axis=1).max(axis=1)
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
         for p in [7,14]:
 
-            features[f"atr_{p}"] = tr.rolling(p).mean()/close
+            df[f"atr_{p}"] = tr.rolling(p).mean() / close
 
-        return pd.DataFrame(features)
+        return df
 
     # ----------------------------------------------------
     # VOLUME FEATURES
     # ----------------------------------------------------
+
     def _volume_features(self, close, volume):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         for p in [1,5,10]:
 
-            features[f"volume_change_{p}"] = volume.pct_change(p)
+            df[f"volume_change_{p}"] = volume.pct_change(p)
 
         for w in [5,10,20]:
 
             vma = volume.rolling(w).mean()
-
-            features[f"volume_vs_ma_{w}"] = volume / vma
+            df[f"volume_vs_ma_{w}"] = volume / vma
 
         obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
 
-        features["obv"] = obv
+        df["obv"] = obv
 
-        return pd.DataFrame(features)
+        return df
 
     # ----------------------------------------------------
-    # MEAN REVERSION
+    # MEAN REVERSION FEATURES
     # ----------------------------------------------------
+
     def _mean_reversion_features(self, close):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         for window in [10,20,30]:
 
             ma = close.rolling(window).mean()
-
             std = close.rolling(window).std()
 
-            features[f"zscore_{window}"] = (close-ma)/std
+            df[f"zscore_{window}"] = (close - ma) / std
 
-        return pd.DataFrame(features)
+        return df
 
     # ----------------------------------------------------
     # STATISTICAL FEATURES
     # ----------------------------------------------------
+
     def _statistical_features(self, close):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         returns = close.pct_change()
 
         for w in [20,60]:
 
-            features[f"skew_{w}"] = returns.rolling(w).skew()
+            df[f"skew_{w}"] = returns.rolling(w).skew()
+            df[f"kurt_{w}"] = returns.rolling(w).kurt()
 
-            features[f"kurt_{w}"] = returns.rolling(w).kurt()
-
-        return pd.DataFrame(features)
+        return df
 
     # ----------------------------------------------------
     # TECHNICAL INDICATORS
     # ----------------------------------------------------
+
     def _technical_indicators(self, close, high, low, volume):
 
-        features = {}
+        df = pd.DataFrame(index=close.index)
 
         try:
 
-            features["adx"] = talib.ADX(high,low,close,timeperiod=14)
-
-            features["cci"] = talib.CCI(high,low,close,timeperiod=20)
-
-            features["mfi"] = talib.MFI(high,low,close,volume,timeperiod=14)
-
-            features["trix"] = talib.TRIX(close,timeperiod=15)
+            df["adx"] = talib.ADX(high, low, close, timeperiod=14)
+            df["cci"] = talib.CCI(high, low, close, timeperiod=20)
+            df["mfi"] = talib.MFI(high, low, close, volume, timeperiod=14)
+            df["trix"] = talib.TRIX(close, timeperiod=15)
 
         except:
 
-            features["adx"]=0
-            features["cci"]=0
-            features["mfi"]=0
-            features["trix"]=0
+            df["adx"] = 0
+            df["cci"] = 0
+            df["mfi"] = 0
+            df["trix"] = 0
 
-        return pd.DataFrame(features,index=close.index)
+        return df
 
     # ----------------------------------------------------
     # FEATURE GROUPS
     # ----------------------------------------------------
+
     def get_feature_importance_groups(self):
 
         groups = {
 
-            "price":[f for f in self.feature_names if "return" in f],
-
-            "momentum":[f for f in self.feature_names if "roc" in f or "rsi" in f],
-
-            "volatility":[f for f in self.feature_names if "volatility" in f or "atr" in f],
-
-            "volume":[f for f in self.feature_names if "volume" in f or "obv" in f],
-
-            "mean_reversion":[f for f in self.feature_names if "zscore" in f],
-
-            "statistical":[f for f in self.feature_names if "skew" in f or "kurt" in f],
-
-            "technical":[f for f in self.feature_names if "adx" in f or "cci" in f]
+            "price": [f for f in self.feature_names if "return" in f],
+            "momentum": [f for f in self.feature_names if "roc" in f or "rsi" in f],
+            "volatility": [f for f in self.feature_names if "volatility" in f or "atr" in f],
+            "volume": [f for f in self.feature_names if "volume" in f or "obv" in f],
+            "mean_reversion": [f for f in self.feature_names if "zscore" in f],
+            "statistical": [f for f in self.feature_names if "skew" in f or "kurt" in f],
+            "technical": [f for f in self.feature_names if "adx" in f or "cci" in f]
 
         }
 
